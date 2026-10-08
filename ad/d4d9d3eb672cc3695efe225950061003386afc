@@ -1,0 +1,34 @@
+install.sh
+  s_042697dfca30f2::t_479b6ca534b088 1-53
+  s_042697dfca30f2::t_7f0c8d4b63af43 54-57
+README.md
+  s_042697dfca30f2::t_64894261765adb 1-329
+tests/smoke.sh
+  s_042697dfca30f2::t_426d392c872cc0 1-102
+.editorconfig
+  s_042697dfca30f2::t_270bf7195cb405 1-8
+.github/workflows/ci.yml
+  s_042697dfca30f2::t_800ad5394575a0 1-28
+CHANGELOG.md
+  s_042697dfca30f2::t_5e693f1edd9035 1-16
+LICENSE
+  s_042697dfca30f2::t_de693ddb86794a 1-21
+cam
+  s_042697dfca30f2::t_41beea042e129f 1-352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "add4d9d3eb672cc3695efe225950061003386afc",
+  "prompts": {},
+  "sessions": {
+    "s_042697dfca30f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54bbc7ae-2cee-423a-be7d-fd3df8e6b45b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "cymon1997 <cybermonster82@yahoo.com>"
+    }
+  }
+}
