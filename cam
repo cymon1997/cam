@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# cam — Claude Account Manager.
+#
+# Keeps several Claude Code logins on one machine and lets you pick one per
+# shell, per command, or as the machine default — in the spirit of sdkman.
+#
+# How it works
+#   Every account is its own CLAUDE_CONFIG_DIR under $CAM_HOME/accounts/<name>.
+#   That directory owns only the identity: .credentials.json, .claude.json
+#   (oauthAccount, MCP servers, per-project trust) and a few caches. Everything
+#   else — projects/ (session transcripts), history.jsonl, settings.json, skills,
+#   agents, plugins, hooks, todos, plans, file-history … — is a symlink back to
+#   the shared ~/.claude, so every account sees and can --resume every session.
+#
+#   $CAM_HOME/bin/claude is a shim. With $CAM_HOME/bin first on PATH, a plain
+#   `claude` runs as $CAM_ACCOUNT (set by `cam use`) or else the default.
+set -euo pipefail
+
+CAM_VERSION="0.1.0"
+CAM_HOME="${CAM_HOME:-$HOME/.cam}"
+SHARED="${CAM_SHARED_DIR:-$HOME/.claude}"
+ACCOUNTS="$CAM_HOME/accounts"
+DEFAULT_FILE="$CAM_HOME/default"
+CAM_BIN="$CAM_HOME/bin"
+
+# Per-account entries: never symlinked to the shared directory.
+PRIVATE=(
+  .credentials.json .claude.json .claude.json.backup backups
+  daemon daemon.log cache state statsig telemetry pricing-hub stats-cache.json
+  policy-limits.json policy-limits.json.stamp.json remote-settings.json
+  gh-pr-status-cache.json .last-cleanup .last-update-result.json .device-keys.json
+)
+# Shared entries created up front so the first run of a new account links them
+# instead of writing a private copy.
+SHARED_DIRS=(projects sessions todos plans file-history shell-snapshots session-env
+  paste-cache jobs ide agents commands skills plugins hooks output-styles)
+SHARED_FILES=(history.jsonl settings.json)
+# .claude.json keys that identify a login; dropped when seeding a new account.
+IDENTITY_KEYS='["oauthAccount","userID","cachedGrowthBookFeatures","cachedExperimentFeatures","cachedExperimentData","groveConfigCache","passesEligibilityCache","modelAccessCache","orgModelDefaultCache","additionalModelOptionsCache","additionalModelCostsCache","cachedUsageUtilization","metricsStatusCacheByPrincipal","clientDataCacheSlots","subscriptionNoticeCount","hasAvailableSubscription","cachedExtraUsageDisabledReason"]'
+
+die()  { printf 'cam: %s\n' "$*" >&2; exit 1; }
+info() { printf '%s\n' "$*" >&2; }
+
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid account name '$1' (letters, digits, . _ -)"; }
+acct_dir()   { printf '%s/%s' "$ACCOUNTS" "$1"; }
+exists()     { [[ -d "$(acct_dir "$1")" ]]; }
+need()       { valid_name "$1"; exists "$1" || die "no such account '$1' — see 'cam list'"; }
+default_account() { if [[ -s "$DEFAULT_FILE" ]]; then cat "$DEFAULT_FILE"; fi; }
+
+# The account a plain `claude` resolves to right now, and why.
+resolve() {
+  if [[ -n "${CAM_ACCOUNT:-}" ]]; then printf '%s\tshell (CAM_ACCOUNT)\n' "$CAM_ACCOUNT"
+  elif [[ -n "$(default_account)" ]]; then printf '%s\tdefault\n' "$(default_account)"
+  fi
+}
+
+# The real claude binary: first `claude` on PATH that is not our shim.
+real_claude() {
+  if [[ -n "${CAM_CLAUDE_BIN:-}" ]]; then printf '%s' "$CAM_CLAUDE_BIN"; return; fi
+  local IFS=: d
+  for d in $PATH; do
+    [[ -z "$d" || "$(cd "$d" 2>/dev/null && pwd -P)" == "$(cd "$CAM_BIN" 2>/dev/null && pwd -P)" ]] && continue
+    [[ -x "$d/claude" && ! -d "$d/claude" ]] && { printf '%s' "$d/claude"; return; }
+  done
+  [[ -x "$HOME/.local/bin/claude" ]] && { printf '%s' "$HOME/.local/bin/claude"; return; }
+  die "cannot find the real claude binary (set CAM_CLAUDE_BIN)"
+}
+
+is_private() { local p; for p in "${PRIVATE[@]}"; do [[ "$1" == "$p" ]] && return 0; done; return 1; }
+
+# Point every shared entry of an account at ~/.claude. Idempotent; runs before
+# each launch so things Claude Code adds to ~/.claude later get picked up too.
+link_shared() {
+  local dir="$1" n src dst
+  mkdir -p "$SHARED"
+  for n in "${SHARED_DIRS[@]}"; do [[ -e "$SHARED/$n" ]] || mkdir -p "$SHARED/$n"; done
+  for n in "${SHARED_FILES[@]}"; do [[ -e "$SHARED/$n" ]] || : > "$SHARED/$n"; done
+  [[ -f "$SHARED/history.jsonl" ]] && chmod 600 "$SHARED/history.jsonl"
+
+  shopt -s dotglob nullglob
+  for src in "$SHARED"/*; do
+    n="${src##*/}"
+    is_private "$n" && continue
+    [[ "$n" == .claude.json.tmp.* ]] && continue
+    dst="$dir/$n"
+    if [[ -L "$dst" ]]; then
+      [[ "$(readlink "$dst")" == "$src" ]] && continue
+      rm -f "$dst"
+    elif [[ -d "$dst" && -d "$src" ]]; then
+      # The account wrote a private copy before it was linked: fold it in.
+      cp -a -n "$dst"/. "$src"/ 2>/dev/null || true
+      rm -rf "$dst"
+    elif [[ -e "$dst" ]]; then
+      mv "$dst" "$dst.cam-local.$(date +%s)"
+      info "cam: kept $dst as a .cam-local backup and linked the shared copy"
+    fi
+    ln -s "$src" "$dst"
+  done
+  shopt -u dotglob nullglob
+}
+
+# Write a starter .claude.json for a new account: the shared one's settings
+# (MCP servers, project trust, onboarding) minus anything tied to a login.
+seed_config() {
+  local dir="$1" from="${2:-$HOME/.claude.json}"
+  if [[ -f "$from" ]] && command -v python3 >/dev/null; then
+    python3 - "$from" "$dir/.claude.json" "$IDENTITY_KEYS" <<'PY'
+import json, sys
+src, dst, drop = sys.argv[1], sys.argv[2], set(json.loads(sys.argv[3]))
+d = json.load(open(src))
+json.dump({k: v for k, v in d.items() if k not in drop}, open(dst, "w"), indent=2)
+PY
+  else
+    printf '{"hasCompletedOnboarding": true}\n' > "$dir/.claude.json"
+  fi
+  chmod 600 "$dir/.claude.json"
+}
+
+account_email() {
+  local f; f="$(acct_dir "$1")/.claude.json"
+  [[ -f "$f" ]] || return 0
+  python3 -c '
+import json,sys
+a=json.load(open(sys.argv[1])).get("oauthAccount") or {}
+print(" / ".join(x for x in (a.get("emailAddress"), a.get("organizationName")) if x))' "$f" 2>/dev/null || true
+}
+
+logged_in() { [[ -s "$(acct_dir "$1")/.credentials.json" ]]; }
+
+launch() {
+  local name="$1"; shift
+  need "$name"
+  local dir; dir="$(acct_dir "$name")"
+  link_shared "$dir"
+  export CLAUDE_CONFIG_DIR="$dir" CAM_ACCOUNT_ACTIVE="$name"
+  exec "$(real_claude)" "$@"
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_add() {
+  local name="" import=0 login=1
+  while (($#)); do
+    case "$1" in
+      --import) import=1 ;;
+      --no-login) login=0 ;;
+      -*) die "add: unknown option $1" ;;
+      *) [[ -z "$name" ]] || die "add: one name only"; name="$1" ;;
+    esac; shift
+  done
+  [[ -n "$name" ]] || die "usage: cam add <name> [--import | --no-login]"
+  valid_name "$name"
+  exists "$name" && die "account '$name' already exists"
+  local dir; dir="$(acct_dir "$name")"
+  mkdir -p "$dir"; chmod 700 "$dir"
+
+  if ((import)); then
+    [[ -s "$SHARED/.credentials.json" ]] || die "no login found in $SHARED/.credentials.json to import"
+    cp "$SHARED/.credentials.json" "$dir/.credentials.json"
+    chmod 600 "$dir/.credentials.json"
+    cp "$HOME/.claude.json" "$dir/.claude.json"; chmod 600 "$dir/.claude.json"
+    link_shared "$dir"
+    info "Imported the current login into '$name' ($(account_email "$name"))."
+    info "Note: from now on refresh this login through cam; a plain ~/.claude login may need /login again once its token rotates."
+  else
+    seed_config "$dir"
+    link_shared "$dir"
+    info "Created account '$name'."
+  fi
+  [[ -z "$(default_account)" ]] && { printf '%s\n' "$name" > "$DEFAULT_FILE"; info "'$name' is now the default."; }
+  if ((!import && login)); then
+    info "Starting login for '$name' …"
+    CLAUDE_CONFIG_DIR="$dir" "$(real_claude)" auth login || info "Login did not finish — retry with: cam login $name"
+    [[ -n "$(account_email "$name")" ]] && info "Logged in as $(account_email "$name")."
+  fi
+}
+
+cmd_login() {
+  [[ $# -ge 1 ]] || die "usage: cam login <name>"
+  need "$1"; local dir; dir="$(acct_dir "$1")"; shift
+  link_shared "$dir"
+  CLAUDE_CONFIG_DIR="$dir" exec "$(real_claude)" auth login "$@"
+}
+
+cmd_list() {
+  local cur def n mark
+  cur="$(resolve | cut -f1)"; def="$(default_account)"
+  shopt -s nullglob
+  local any=0
+  for d in "$ACCOUNTS"/*/; do
+    any=1; n="$(basename "$d")"
+    mark="  "; [[ "$n" == "$cur" ]] && mark="> "
+    printf '%s%-16s %-9s %-9s %s\n' "$mark" "$n" \
+      "$([[ "$n" == "$def" ]] && echo default || echo "")" \
+      "$(logged_in "$n" && echo "" || echo "no-login")" \
+      "$(account_email "$n")"
+  done
+  ((any)) || info "No accounts yet. Add one: cam add <name> [--import]"
+}
+
+cmd_current() {
+  local r; r="$(resolve)"
+  [[ -n "$r" ]] || { info "No account selected and no default. Run: cam default <name>"; exit 1; }
+  printf '%s  (%s)  %s\n' "$(cut -f1 <<<"$r")" "$(cut -f2 <<<"$r")" "$(account_email "$(cut -f1 <<<"$r")")"
+}
+
+cmd_default() {
+  if [[ $# -eq 0 ]]; then
+    local d; d="$(default_account)"
+    [[ -n "$d" ]] || { info "no default set"; exit 1; }
+    echo "$d"; return
+  fi
+  need "$1"; printf '%s\n' "$1" > "$DEFAULT_FILE"; info "Default account: $1"
+}
+
+# `use` can only change the calling shell through the function `cam init` installs.
+cmd_use() {
+  [[ $# -eq 1 ]] || die "usage: cam use <name>   (or: cam use --default)"
+  if [[ "$1" == "--default" ]]; then echo "unset CAM_ACCOUNT"; return; fi
+  need "$1"; printf 'export CAM_ACCOUNT=%q\n' "$1"
+  [[ -n "${CAM_SHELL_INIT:-}" ]] || info "cam: shell integration is not loaded; add  eval \"\$(cam init)\"  to your shell rc, or run: eval \"\$(cam use $1)\""
+}
+
+cmd_run() {
+  [[ $# -ge 1 ]] || die "usage: cam run <name> [claude args…]"
+  local name="$1"; shift; launch "$name" "$@"
+}
+
+cmd_env() {
+  local name="${1:-$(resolve | cut -f1)}"
+  [[ -n "$name" ]] || die "usage: cam env <name>"
+  need "$name"; link_shared "$(acct_dir "$name")"
+  printf 'export CLAUDE_CONFIG_DIR=%q\n' "$(acct_dir "$name")"
+}
+
+cmd_remove() {
+  local name="" yes=0
+  while (($#)); do case "$1" in -y|--yes) yes=1 ;; *) name="$1" ;; esac; shift; done
+  [[ -n "$name" ]] || die "usage: cam remove <name> [-y]"
+  need "$name"
+  if ((!yes)); then
+    read -r -p "Remove account '$name' ($(account_email "$name")) and its login? Shared sessions stay. [y/N] " a
+    [[ "$a" == [yY]* ]] || { info "aborted"; exit 1; }
+  fi
+  local dir; dir="$(acct_dir "$name")"
+  # Drop the symlinks first so nothing shared can be reached by the delete.
+  find "$dir" -mindepth 1 -maxdepth 1 -type l -delete
+  rm -rf -- "$dir"
+  [[ "$(default_account)" == "$name" ]] && rm -f "$DEFAULT_FILE" && info "'$name' was the default; set a new one with: cam default <name>"
+  info "Removed '$name'."
+}
+
+cmd_rename() {
+  [[ $# -eq 2 ]] || die "usage: cam rename <old> <new>"
+  need "$1"; valid_name "$2"; exists "$2" && die "account '$2' already exists"
+  mv "$(acct_dir "$1")" "$(acct_dir "$2")"
+  link_shared "$(acct_dir "$2")"
+  [[ "$(default_account)" == "$1" ]] && printf '%s\n' "$2" > "$DEFAULT_FILE"
+  info "Renamed '$1' → '$2'."
+}
+
+cmd_sync() {
+  shopt -s nullglob; local d
+  for d in "$ACCOUNTS"/*/; do link_shared "${d%/}"; done
+  info "Re-linked shared state for every account."
+}
+
+cmd_doctor() {
+  echo "CAM_HOME      $CAM_HOME"
+  echo "shared dir    $SHARED"
+  echo "real claude   $(real_claude) ($("$(real_claude)" --version 2>/dev/null || echo '?'))"
+  echo "shim on PATH  $([[ "$(command -v claude)" == "$CAM_BIN/claude" ]] && echo yes || echo "no — $(command -v claude || echo none) wins; add: eval \"\$(cam init)\"")"
+  echo "shell init    $([[ -n "${CAM_SHELL_INIT:-}" ]] && echo loaded || echo "not loaded")"
+  echo "resolves to   $(resolve | tr '\t' ' ' || true)"
+  echo
+  cmd_list
+}
+
+cmd_init() {
+  local shell="${1:-$(basename "${SHELL:-bash}")}"
+  case "$shell" in
+    zsh|bash) ;;
+    *) die "init: supported shells are zsh and bash" ;;
+  esac
+  cat <<EOF
+# cam shell integration ($shell)
+export CAM_HOME=$(printf '%q' "$CAM_HOME")
+case ":\$PATH:" in *":\$CAM_HOME/bin:"*) ;; *) export PATH="\$CAM_HOME/bin:\$PATH" ;; esac
+export CAM_SHELL_INIT=1
+cam() {
+  case "\${1:-}" in
+    use) local _cam_out; _cam_out="\$(command cam "\$@")" && eval "\$_cam_out" && command cam current ;;
+    *) command cam "\$@" ;;
+  esac
+}
+EOF
+}
+
+usage() {
+  cat <<'EOF'
+cam — Claude Account Manager
+
+  cam add <name> [--import]   register an account (logs in; --import takes the current ~/.claude login)
+  cam login <name>            (re)log in an account
+  cam list                    list accounts  (> = active in this shell)
+  cam use <name>              switch this shell to <name>  (cam use --default to clear)
+  cam default [name]          show or set the machine-wide default
+  cam current                 which account a plain `claude` runs as
+  cam run <name> [args…]      run claude once as <name>, e.g. cam run work --resume
+  cam env [name]              print the CLAUDE_CONFIG_DIR export for scripts
+  cam rename <old> <new>      rename an account
+  cam remove <name> [-y]      delete an account's login (sessions are kept)
+  cam sync                    re-link shared state for every account
+  cam doctor                  check the setup
+  cam init [zsh|bash]         shell integration — add to your rc:  eval "$(cam init)"
+  cam version                 print the cam version
+
+Every account shares ~/.claude: sessions, history, settings, skills, plugins.
+Only the login and ~/.claude.json-level config are per account.
+EOF
+}
+
+# --------------------------------------------------------------- dispatch
+
+# Invoked as the `claude` shim.
+if [[ "$(basename "$0")" == "claude" ]]; then
+  # A claude started by cam passes its account on to the claude processes it spawns.
+  name="${CAM_ACCOUNT_ACTIVE:-$(resolve | cut -f1)}"
+  if [[ -z "$name" ]]; then exec "$(real_claude)" "$@"; fi
+  launch "$name" "$@"
+fi
+
+mkdir -p "$ACCOUNTS"
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  add) cmd_add "$@" ;;
+  login) cmd_login "$@" ;;
+  list|ls) cmd_list ;;
+  use) cmd_use "$@" ;;
+  default) cmd_default "$@" ;;
+  current) cmd_current ;;
+  run) cmd_run "$@" ;;
+  env) cmd_env "$@" ;;
+  remove|rm) cmd_remove "$@" ;;
+  rename|mv) cmd_rename "$@" ;;
+  sync) cmd_sync ;;
+  doctor) cmd_doctor ;;
+  init) cmd_init "$@" ;;
+  version|-v|--version) echo "cam $CAM_VERSION" ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac
