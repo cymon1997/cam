@@ -1,0 +1,19 @@
+cam
+  s_e3ef442fea5dfa::t_10b04a07e798cf 217,224,228
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "38abfa9b857b246e476a669a211b469ca0fd81e5",
+  "prompts": {},
+  "sessions": {
+    "s_e3ef442fea5dfa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "030944a6-9ac6-4aad-8303-3fa16c34e96d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "cymon1997 <cybermonster82@yahoo.com>"
+    }
+  }
+}
