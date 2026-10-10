@@ -12,11 +12,15 @@
 #   agents, plugins, hooks, todos, plans, file-history … — is a symlink back to
 #   the shared ~/.claude, so every account sees and can --resume every session.
 #
+#   An account can opt out of sharing its sessions (`cam isolate`): then the
+#   session entries below are real files in its own directory, while settings,
+#   skills, plugins and the rest stay shared.
+#
 #   $CAM_HOME/bin/claude is a shim. With $CAM_HOME/bin first on PATH, a plain
 #   `claude` runs as $CAM_ACCOUNT (set by `cam use`) or else the default.
 set -euo pipefail
 
-CAM_VERSION="0.1.0"
+CAM_VERSION="0.2.0"
 CAM_HOME="${CAM_HOME:-$HOME/.cam}"
 SHARED="${CAM_SHARED_DIR:-$HOME/.claude}"
 ACCOUNTS="$CAM_HOME/accounts"
@@ -35,6 +39,11 @@ PRIVATE=(
 SHARED_DIRS=(projects sessions todos plans file-history shell-snapshots session-env
   paste-cache jobs ide agents commands skills plugins hooks output-styles)
 SHARED_FILES=(history.jsonl settings.json)
+# Session state an isolated account keeps to itself instead of sharing.
+ISOLATED_DIRS=(projects sessions file-history todos plans session-env shell-snapshots paste-cache)
+ISOLATED_FILES=(history.jsonl)
+# Marker file: present in an account's directory when its sessions are isolated.
+ISOLATE_MARK=.cam-isolated
 # .claude.json keys that identify a login; dropped when seeding a new account.
 IDENTITY_KEYS='["oauthAccount","userID","cachedGrowthBookFeatures","cachedExperimentFeatures","cachedExperimentData","groveConfigCache","passesEligibilityCache","modelAccessCache","orgModelDefaultCache","additionalModelOptionsCache","additionalModelCostsCache","cachedUsageUtilization","metricsStatusCacheByPrincipal","clientDataCacheSlots","subscriptionNoticeCount","hasAvailableSubscription","cachedExtraUsageDisabledReason"]'
 
@@ -67,6 +76,8 @@ real_claude() {
 }
 
 is_private() { local p; for p in "${PRIVATE[@]}"; do [[ "$1" == "$p" ]] && return 0; done; return 1; }
+is_session() { local p; for p in "${ISOLATED_DIRS[@]}" "${ISOLATED_FILES[@]}"; do [[ "$1" == "$p" ]] && return 0; done; return 1; }
+isolated()   { [[ -e "$(acct_dir "$1")/$ISOLATE_MARK" ]]; }
 
 # Point every shared entry of an account at ~/.claude. Idempotent; runs before
 # each launch so things Claude Code adds to ~/.claude later get picked up too.
@@ -77,10 +88,27 @@ link_shared() {
   for n in "${SHARED_FILES[@]}"; do [[ -e "$SHARED/$n" ]] || : > "$SHARED/$n"; done
   [[ -f "$SHARED/history.jsonl" ]] && chmod 600 "$SHARED/history.jsonl"
 
+  # An isolated account owns its session state: replace any shared link with a
+  # real entry. The shared copies are untouched.
+  local iso=0
+  if [[ -e "$dir/$ISOLATE_MARK" ]]; then
+    iso=1
+    for n in "${ISOLATED_DIRS[@]}"; do
+      [[ -L "$dir/$n" ]] && rm -f "$dir/$n"
+      mkdir -p "$dir/$n"
+    done
+    for n in "${ISOLATED_FILES[@]}"; do
+      [[ -L "$dir/$n" ]] && rm -f "$dir/$n"
+      [[ -e "$dir/$n" ]] || : > "$dir/$n"
+      chmod 600 "$dir/$n"
+    done
+  fi
+
   shopt -s dotglob nullglob
   for src in "$SHARED"/*; do
     n="${src##*/}"
     is_private "$n" && continue
+    ((iso)) && is_session "$n" && continue
     [[ "$n" == .claude.json.tmp.* ]] && continue
     dst="$dir/$n"
     if [[ -L "$dst" ]]; then
@@ -139,20 +167,22 @@ launch() {
 # ---------------------------------------------------------------- commands
 
 cmd_add() {
-  local name="" import=0 login=1
+  local name="" import=0 login=1 isolate=0
   while (($#)); do
     case "$1" in
       --import) import=1 ;;
       --no-login) login=0 ;;
+      --isolate-sessions) isolate=1 ;;
       -*) die "add: unknown option $1" ;;
       *) [[ -z "$name" ]] || die "add: one name only"; name="$1" ;;
     esac; shift
   done
-  [[ -n "$name" ]] || die "usage: cam add <name> [--import | --no-login]"
+  [[ -n "$name" ]] || die "usage: cam add <name> [--import | --no-login] [--isolate-sessions]"
   valid_name "$name"
   exists "$name" && die "account '$name' already exists"
   local dir; dir="$(acct_dir "$name")"
   mkdir -p "$dir"; chmod 700 "$dir"
+  ((isolate)) && : > "$dir/$ISOLATE_MARK"
 
   if ((import)); then
     [[ -s "$SHARED/.credentials.json" ]] || die "no login found in $SHARED/.credentials.json to import"
@@ -167,6 +197,7 @@ cmd_add() {
     link_shared "$dir"
     info "Created account '$name'."
   fi
+  ((isolate)) && info "'$name' keeps its sessions to itself; other accounts cannot see or resume them."
   [[ -z "$(default_account)" ]] && { printf '%s\n' "$name" > "$DEFAULT_FILE"; info "'$name' is now the default."; }
   if ((!import && login)); then
     info "Starting login for '$name' …"
@@ -193,7 +224,7 @@ cmd_list() {
     printf '%s%-16s %-9s %-9s %s\n' "$mark" "$n" \
       "$([[ "$n" == "$def" ]] && echo default || echo "")" \
       "$(logged_in "$n" && echo "" || echo "no-login")" \
-      "$(account_email "$n")"
+      "$(account_email "$n")$(isolated "$n" && echo "  [isolated]" || true)"
   done
   ((any)) || info "No accounts yet. Add one: cam add <name> [--import]"
 }
@@ -239,7 +270,9 @@ cmd_remove() {
   [[ -n "$name" ]] || die "usage: cam remove <name> [-y]"
   need "$name"
   if ((!yes)); then
-    read -r -p "Remove account '$name' ($(account_email "$name")) and its login? Shared sessions stay. [y/N] " a
+    local what="Shared sessions stay."
+    isolated "$name" && what="Its ISOLATED sessions are deleted too."
+    read -r -p "Remove account '$name' ($(account_email "$name")) and its login? $what [y/N] " a
     [[ "$a" == [yY]* ]] || { info "aborted"; exit 1; }
   fi
   local dir; dir="$(acct_dir "$name")"
@@ -257,6 +290,39 @@ cmd_rename() {
   link_shared "$(acct_dir "$2")"
   [[ "$(default_account)" == "$1" ]] && printf '%s\n' "$2" > "$DEFAULT_FILE"
   info "Renamed '$1' → '$2'."
+}
+
+# Stop (or resume) sharing one account's sessions with the others.
+cmd_isolate() {
+  local name="" off=0
+  while (($#)); do
+    case "$1" in
+      --off) off=1 ;;
+      -*) die "isolate: unknown option $1" ;;
+      *) [[ -z "$name" ]] || die "isolate: one name only"; name="$1" ;;
+    esac; shift
+  done
+  [[ -n "$name" ]] || die "usage: cam isolate <name> [--off]"
+  need "$name"
+  local dir; dir="$(acct_dir "$name")"
+  if ((off)); then
+    isolated "$name" || { info "'$name' already shares its sessions."; return; }
+    # Fold the private prompt history into the shared one; link_shared merges
+    # the session directories into ~/.claude itself.
+    if [[ -f "$dir/history.jsonl" && ! -L "$dir/history.jsonl" ]]; then
+      cat "$dir/history.jsonl" >> "$SHARED/history.jsonl"
+      rm -f "$dir/history.jsonl"
+    fi
+    rm -f "$dir/$ISOLATE_MARK"
+    link_shared "$dir"
+    info "'$name' shares its sessions again; its isolated sessions were merged into $SHARED."
+  else
+    isolated "$name" && { info "'$name' already keeps its sessions to itself."; return; }
+    : > "$dir/$ISOLATE_MARK"
+    link_shared "$dir"
+    info "'$name' now keeps its sessions to itself. It starts with an empty session list;"
+    info "sessions in $SHARED stay there for the other accounts."
+  fi
 }
 
 cmd_sync() {
@@ -300,7 +366,8 @@ usage() {
   cat <<'EOF'
 cam — Claude Account Manager
 
-  cam add <name> [--import]   register an account (logs in; --import takes the current ~/.claude login)
+  cam add <name> [--import]   register an account (logs in; --import takes the current ~/.claude login;
+                              --isolate-sessions keeps its sessions out of the shared pool)
   cam login <name>            (re)log in an account
   cam list                    list accounts  (> = active in this shell)
   cam use <name>              switch this shell to <name>  (cam use --default to clear)
@@ -309,14 +376,16 @@ cam — Claude Account Manager
   cam run <name> [args…]      run claude once as <name>, e.g. cam run work --resume
   cam env [name]              print the CLAUDE_CONFIG_DIR export for scripts
   cam rename <old> <new>      rename an account
-  cam remove <name> [-y]      delete an account's login (sessions are kept)
+  cam remove <name> [-y]      delete an account's login (shared sessions are kept)
+  cam isolate <name> [--off]  stop sharing <name>'s sessions with other accounts (--off: share again)
   cam sync                    re-link shared state for every account
   cam doctor                  check the setup
   cam init [zsh|bash]         shell integration — add to your rc:  eval "$(cam init)"
   cam version                 print the cam version
 
 Every account shares ~/.claude: sessions, history, settings, skills, plugins.
-Only the login and ~/.claude.json-level config are per account.
+Only the login and ~/.claude.json-level config are per account — plus the
+sessions and prompt history of an account under `cam isolate`.
 EOF
 }
 
@@ -343,6 +412,7 @@ case "$cmd" in
   env) cmd_env "$@" ;;
   remove|rm) cmd_remove "$@" ;;
   rename|mv) cmd_rename "$@" ;;
+  isolate) cmd_isolate "$@" ;;
   sync) cmd_sync ;;
   doctor) cmd_doctor ;;
   init) cmd_init "$@" ;;
