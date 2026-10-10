@@ -129,6 +129,19 @@ check "isolating leaves shared sessions in place" [ -d "$HOME/.claude/projects/d
 check "isolating starts with an empty session list" \
   [ "$(find "$CAM_HOME/accounts/personal/projects" -name '*.jsonl' | wc -l)" -eq 0 ]
 
+# Tab completion: bash, driven the way readline would call it.
+complete_words() { COMP_WORDS=("$@"); COMP_CWORD=$((${#COMP_WORDS[@]} - 1)); _cam_complete; echo "${COMPREPLY[*]}"; }
+check "list --names prints bare names" [ "$(cam list --names | tr '\n' ' ')" = "personal solo " ]
+check "completion offers subcommands" contains "$(complete_words cam is)" "isolate"
+check "completion offers account names" [ "$(complete_words cam use so)" = solo ]
+check "completion offers --default for use" contains "$(complete_words cam use '')" "--default"
+check "completion offers add flags" contains "$(complete_words cam add --)" "--isolate-sessions"
+check "completion stops after the account for run" [ -z "$(complete_words cam run solo '')" ]
+if command -v zsh >/dev/null; then
+  check "zsh completion registers" contains \
+    "$(zsh -fc 'eval "$("$1" init zsh)"; print -r -- "$_comps[cam]"' _ "$CAM_HOME/bin/cam")" "_cam"
+fi
+
 check "unknown account fails" bash -c "! cam run nope 2>/dev/null"
 check "isolate on an unknown account fails" bash -c "! cam isolate nope 2>/dev/null"
 
