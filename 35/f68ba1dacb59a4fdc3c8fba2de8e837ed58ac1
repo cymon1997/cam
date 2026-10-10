@@ -1,0 +1,19 @@
+README.md
+  s_e3ef442fea5dfa::t_575394099fc0f0 214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "35f68ba1dacb59a4fdc3c8fba2de8e837ed58ac1",
+  "prompts": {},
+  "sessions": {
+    "s_e3ef442fea5dfa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "030944a6-9ac6-4aad-8303-3fa16c34e96d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "cymon1997 <cybermonster82@yahoo.com>"
+    }
+  }
+}
