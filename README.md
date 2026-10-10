@@ -211,7 +211,7 @@ sessions in /home/me/.claude stay there for the other accounts.
 
 $ cam list
 > personal         default             me@example.com
-  client                               me@client.com  [isolated]
+  client                              me@client.com  [isolated]
 ```
 
 You can also isolate an account when you create it with `cam add client --isolate-sessions`.
