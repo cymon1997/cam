@@ -4,6 +4,14 @@ All notable changes to cam are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-10-10
+
+### Added
+- Tab completion in bash and zsh, installed by `eval "$(cam init)"`: subcommands, flags, and
+  registered account names for `use`, `run`, `login`, `default`, `env`, `rename`, `remove` and
+  `isolate`. In zsh, subcommands are listed with descriptions.
+- `cam list --names` prints bare account names, one per line.
+
 ## [0.2.0] — 2026-10-10
 
 ### Added

@@ -20,7 +20,7 @@
 #   `claude` runs as $CAM_ACCOUNT (set by `cam use`) or else the default.
 set -euo pipefail
 
-CAM_VERSION="0.2.0"
+CAM_VERSION="0.3.0"
 CAM_HOME="${CAM_HOME:-$HOME/.cam}"
 SHARED="${CAM_SHARED_DIR:-$HOME/.claude}"
 ACCOUNTS="$CAM_HOME/accounts"
@@ -213,7 +213,16 @@ cmd_login() {
   CLAUDE_CONFIG_DIR="$dir" exec "$(real_claude)" auth login "$@"
 }
 
+# Plain account names, one per line: for scripts and shell completion.
+account_names() {
+  shopt -s nullglob; local d
+  for d in "$ACCOUNTS"/*/; do d="${d%/}"; printf '%s\n' "${d##*/}"; done
+  shopt -u nullglob
+}
+
 cmd_list() {
+  if [[ "${1:-}" == "--names" ]]; then account_names; return; fi
+  [[ $# -eq 0 ]] || die "usage: cam list [--names]"
   local cur def n mark tag
   cur="$(resolve | cut -f1)"; def="$(default_account)"
   shopt -s nullglob
@@ -361,6 +370,68 @@ cam() {
   esac
 }
 EOF
+  if [[ "$shell" == zsh ]]; then completion_zsh; else completion_bash; fi
+}
+
+# Tab completion. Account names are read from disk on every <Tab>, so a newly
+# added account completes without reloading the shell.
+CAM_COMMANDS="add login list ls use default current run env rename mv remove rm isolate sync doctor init version help"
+
+completion_bash() {
+  cat <<EOF
+_cam_complete() {
+  local cur="\${COMP_WORDS[COMP_CWORD]}" cmd="\${COMP_WORDS[1]:-}" i="\$COMP_CWORD" w=""
+  if ((i == 1)); then
+    w="$CAM_COMMANDS"
+  else
+    case "\$cmd" in
+      login|default|env|run|rename|mv) ((i == 2)) && w="\$(command cam list --names 2>/dev/null)" ;;
+      use) ((i == 2)) && w="\$(command cam list --names 2>/dev/null) --default" ;;
+      remove|rm) w="\$(command cam list --names 2>/dev/null) -y --yes" ;;
+      isolate) w="\$(command cam list --names 2>/dev/null) --off" ;;
+      add) w="--import --no-login --isolate-sessions" ;;
+      list|ls) ((i == 2)) && w="--names" ;;
+      init) ((i == 2)) && w="zsh bash" ;;
+    esac
+  fi
+  COMPREPLY=(\$(compgen -W "\$w" -- "\$cur"))
+}
+complete -F _cam_complete cam
+EOF
+}
+
+completion_zsh() {
+  cat <<'EOF'
+_cam() {
+  local -a cmds names
+  cmds=(
+    'add:register an account' 'login:log an account in again' 'list:list accounts'
+    'use:switch this shell to an account' 'default:show or set the default account'
+    'current:which account a plain claude runs as' 'run:run claude once as an account'
+    'env:print the CLAUDE_CONFIG_DIR export' 'rename:rename an account'
+    'remove:delete an account' 'isolate:stop sharing an account'"'"'s sessions'
+    'sync:re-link shared state' 'doctor:check the setup' 'init:print shell integration'
+    'version:print the cam version' 'help:show usage'
+  )
+  if (( CURRENT == 2 )); then _describe -t commands 'cam command' cmds; return; fi
+  names=(${(f)"$(command cam list --names 2>/dev/null)"})
+  case $words[2] in
+    login|default|env|run|rename|mv) (( CURRENT == 3 )) && compadd -a names ;;
+    use) (( CURRENT == 3 )) && { compadd -a names; compadd -- --default; } ;;
+    remove|rm) compadd -a names; compadd -- -y --yes ;;
+    isolate) compadd -a names; compadd -- --off ;;
+    add) compadd -- --import --no-login --isolate-sessions ;;
+    list|ls) (( CURRENT == 3 )) && compadd -- --names ;;
+    init) (( CURRENT == 3 )) && compadd -- zsh bash ;;
+  esac
+}
+if (( $+functions[compdef] )); then
+  compdef _cam cam
+else
+  # compinit has not run yet: register once it does.
+  autoload -Uz compinit && compinit -C && compdef _cam cam
+fi
+EOF
 }
 
 usage() {
@@ -370,7 +441,7 @@ cam — Claude Account Manager
   cam add <name> [--import]   register an account (logs in; --import takes the current ~/.claude login;
                               --isolate-sessions keeps its sessions out of the shared pool)
   cam login <name>            (re)log in an account
-  cam list                    list accounts  (> = active in this shell)
+  cam list [--names]          list accounts  (> = active in this shell; --names: names only)
   cam use <name>              switch this shell to <name>  (cam use --default to clear)
   cam default [name]          show or set the machine-wide default
   cam current                 which account a plain `claude` runs as
@@ -381,7 +452,7 @@ cam — Claude Account Manager
   cam isolate <name> [--off]  stop sharing <name>'s sessions with other accounts (--off: share again)
   cam sync                    re-link shared state for every account
   cam doctor                  check the setup
-  cam init [zsh|bash]         shell integration — add to your rc:  eval "$(cam init)"
+  cam init [zsh|bash]         shell integration and tab completion — add to your rc:  eval "$(cam init)"
   cam version                 print the cam version
 
 Every account shares ~/.claude: sessions, history, settings, skills, plugins.
@@ -405,7 +476,7 @@ cmd="${1:-help}"; shift || true
 case "$cmd" in
   add) cmd_add "$@" ;;
   login) cmd_login "$@" ;;
-  list|ls) cmd_list ;;
+  list|ls) cmd_list "$@" ;;
   use) cmd_use "$@" ;;
   default) cmd_default "$@" ;;
   current) cmd_current ;;

@@ -119,7 +119,10 @@ This line does three things:
 
 - puts `~/.cam/bin` first on your `PATH`, so `claude` goes through the shim;
 - puts `cam` itself on your `PATH`;
-- defines a small `cam` shell function, so `cam use` can change the current shell.
+- defines a small `cam` shell function, so `cam use` can change the current shell;
+- turns on tab completion for subcommands, flags and your registered account names, so
+  `cam use wo<Tab>` completes to `cam use work`. Names are read on every <Tab>, so a newly
+  added account completes straight away.
 
 Check the setup:
 
@@ -234,6 +237,7 @@ pool, and its prompt history is appended to the shared one.
 | `cam add <name> --isolate-sessions` | Register an account whose sessions are not shared. Combines with the flags above. |
 | `cam login <name>` | Log an account in again, for example after its token expires. |
 | `cam list` | List accounts with their email and organisation. `>` marks the active account and `default` marks the default. |
+| `cam list --names` | Print account names only, one per line. Used by tab completion; handy in scripts. |
 | `cam use <name>` | Use `<name>` in this shell. |
 | `cam use --default` | Clear the shell override and fall back to the default. |
 | `cam default [name]` | Show the machine-wide default, or set it. |
@@ -246,7 +250,7 @@ pool, and its prompt history is appended to the shared one.
 | `cam isolate <name> --off` | Share them again. The account's isolated sessions are merged into `~/.claude`. |
 | `cam sync` | Refresh the shared symlinks for every account. |
 | `cam doctor` | Show paths, the real `claude` binary, the shim state and the accounts. |
-| `cam init [zsh\|bash]` | Print the shell integration snippet. |
+| `cam init [zsh\|bash]` | Print the shell integration snippet, including tab completion. |
 | `cam version` | Print the cam version. |
 
 ### Environment variables
