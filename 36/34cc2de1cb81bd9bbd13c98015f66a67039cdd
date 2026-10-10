@@ -1,0 +1,25 @@
+CHANGELOG.md
+  s_9634da6ed895d2::t_37734053fccfb7 7-14
+README.md
+  s_9634da6ed895d2::t_dce9c4c9bbf64a 122-125,240,253
+cam
+  s_9634da6ed895d2::t_5fed7a155e9c3a 23,216-222,224-225,372-433,444,455,479
+tests/smoke.sh
+  s_9634da6ed895d2::t_b72cff0efa256a 132-144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "3634cc2de1cb81bd9bbd13c98015f66a67039cdd",
+  "prompts": {},
+  "sessions": {
+    "s_9634da6ed895d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b821651d-f06e-4e2c-9833-120081057af9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "cymon1997 <cybermonster82@yahoo.com>"
+    }
+  }
+}
