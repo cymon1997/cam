@@ -50,6 +50,7 @@ check() { # check <description> <command…>
   if "$@"; then pass=$((pass + 1)); echo "ok   $desc"; else echo "FAIL $desc" >&2; exit 1; fi
 }
 contains() { grep -q -- "$2" <<<"$1"; }
+real() { [[ -e "$1" && ! -L "$1" ]]; }  # exists and is not a symlink
 
 check "cam is on PATH as the shim" [ "$(command -v claude)" = "$CAM_HOME/bin/claude" ]
 check "version prints" contains "$(cam version)" "cam "
@@ -97,6 +98,38 @@ cam remove job -y 2>/dev/null
 check "remove deletes the account" [ ! -d "$CAM_HOME/accounts/job" ]
 check "remove keeps shared sessions" [ -d "$HOME/.claude/projects/demo" ]
 
+# Isolated sessions: one account keeps its sessions out of the shared pool.
+cam add solo --no-login --isolate-sessions 2>/dev/null
+solo="$CAM_HOME/accounts/solo"
+check "isolated account owns its projects" real "$solo/projects"
+check "isolated account owns its history" real "$solo/history.jsonl"
+check "isolated account still shares settings" [ -L "$solo/settings.json" ]
+check "isolated account still shares skills" [ -L "$solo/skills" ]
+check "list marks the isolated account" contains "$(cam list)" "isolated"
+
+shared_before="$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l)"
+cam run solo >/dev/null
+check "isolated session stays out of ~/.claude" \
+  [ "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l)" -eq "$shared_before" ]
+check "isolated session lands in the account" \
+  [ "$(find "$solo/projects" -name '*.jsonl' | wc -l)" -eq 1 ]
+cam sync 2>/dev/null
+check "sync keeps the account isolated" real "$solo/projects"
+
+echo '{"display":"solo prompt"}' > "$solo/history.jsonl"
+cam isolate solo --off 2>/dev/null
+check "isolate --off links projects again" [ -L "$solo/projects" ]
+check "isolate --off merges isolated sessions" \
+  [ "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l)" -eq "$((shared_before + 1))" ]
+check "isolate --off merges prompt history" grep -q "solo prompt" "$HOME/.claude/history.jsonl"
+
+cam isolate personal 2>/dev/null
+check "isolate turns an existing account private" real "$CAM_HOME/accounts/personal/projects"
+check "isolating leaves shared sessions in place" [ -d "$HOME/.claude/projects/demo" ]
+check "isolating starts with an empty session list" \
+  [ "$(find "$CAM_HOME/accounts/personal/projects" -name '*.jsonl' | wc -l)" -eq 0 ]
+
 check "unknown account fails" bash -c "! cam run nope 2>/dev/null"
+check "isolate on an unknown account fails" bash -c "! cam isolate nope 2>/dev/null"
 
 echo "$pass checks passed"

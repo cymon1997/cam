@@ -24,6 +24,8 @@ $ claude --resume   # every session from every account is listed
   `cam default`.
 - **Sessions are shared.** Conversations, history, settings, skills, agents, plugins and hooks
   live in one place, so any account can resume a session started by another one.
+- **Or keep one account's sessions apart.** `cam isolate <name>` gives an account its own
+  sessions and prompt history, while it still shares settings, skills and plugins.
 - **Plain `claude` still works.** A small shim picks the right account, so your scripts, aliases
   and IDE integrations keep working.
 - **A single bash script with no dependencies** beyond `bash` and `python3`, which reads the
@@ -197,6 +199,31 @@ cam use personal
 claude --continue      # most recent session in this directory, now as personal
 ```
 
+### 7. Keep one account's sessions to itself
+
+Sharing everything is the default. If an account's work must not show up in the other
+accounts' `--resume` list, for example a client account, isolate it:
+
+```console
+$ cam isolate client
+'client' now keeps its sessions to itself. It starts with an empty session list;
+sessions in /home/me/.claude stay there for the other accounts.
+
+$ cam list
+> personal         default             me@example.com
+  client                              me@client.com  [isolated]
+```
+
+You can also isolate an account when you create it with `cam add client --isolate-sessions`.
+
+An isolated account keeps its own `projects/`, `sessions/`, `history.jsonl`, `file-history/`,
+`todos/`, `plans/`, `session-env/`, `shell-snapshots/` and `paste-cache/`. Settings, `CLAUDE.md`,
+skills, agents, commands, plugins and hooks are still shared. Per-project auto-memory lives
+under `projects/`, so it is isolated too.
+
+`cam isolate client --off` shares the account again. Its sessions are merged into the shared
+pool, and its prompt history is appended to the shared one.
+
 ## Command reference
 
 | Command | What it does |
@@ -204,6 +231,7 @@ claude --continue      # most recent session in this directory, now as personal
 | `cam add <name>` | Register an account and start its login. |
 | `cam add <name> --import` | Register an account using the login currently in `~/.claude`. |
 | `cam add <name> --no-login` | Register an account without logging in yet. |
+| `cam add <name> --isolate-sessions` | Register an account whose sessions are not shared. Combines with the flags above. |
 | `cam login <name>` | Log an account in again, for example after its token expires. |
 | `cam list` | List accounts with their email and organisation. `>` marks the active account and `default` marks the default. |
 | `cam use <name>` | Use `<name>` in this shell. |
@@ -213,7 +241,9 @@ claude --continue      # most recent session in this directory, now as personal
 | `cam run <name> [args…]` | Run `claude [args…]` once as `<name>`. |
 | `cam env [name]` | Print `export CLAUDE_CONFIG_DIR=…` for use in scripts. |
 | `cam rename <old> <new>` | Rename an account. The default follows it. |
-| `cam remove <name> [-y]` | Delete an account's login. Shared sessions are kept. |
+| `cam remove <name> [-y]` | Delete an account's login. Shared sessions are kept. An isolated account's own sessions are deleted with it. |
+| `cam isolate <name>` | Stop sharing `<name>`'s sessions and prompt history with other accounts. |
+| `cam isolate <name> --off` | Share them again. The account's isolated sessions are merged into `~/.claude`. |
 | `cam sync` | Refresh the shared symlinks for every account. |
 | `cam doctor` | Show paths, the real `claude` binary, the shim state and the accounts. |
 | `cam init [zsh\|bash]` | Print the shell integration snippet. |
@@ -270,6 +300,11 @@ alias cp1='cam run personal'
 
 Anything Claude Code adds to `~/.claude` in a future version is shared automatically, unless it is
 on the private list at the top of the `cam` script.
+
+**Isolated accounts.** For an account under `cam isolate`, the session entries move to the
+private column: `projects/`, `sessions/`, `history.jsonl`, `file-history/`, `todos/`, `plans/`,
+`session-env/`, `shell-snapshots/` and `paste-cache/`. The list is `ISOLATED_DIRS` /
+`ISOLATED_FILES` at the top of the `cam` script.
 
 **Note on `.claude.json`.** This file mixes account identity with user-scope MCP servers and
 project trust, so each account keeps its own copy. A new account starts with a copy of your main
