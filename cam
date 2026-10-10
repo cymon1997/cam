@@ -214,17 +214,18 @@ cmd_login() {
 }
 
 cmd_list() {
-  local cur def n mark
+  local cur def n mark tag
   cur="$(resolve | cut -f1)"; def="$(default_account)"
   shopt -s nullglob
   local any=0
   for d in "$ACCOUNTS"/*/; do
     any=1; n="$(basename "$d")"
     mark="  "; [[ "$n" == "$cur" ]] && mark="> "
+    tag=""; if isolated "$n"; then tag="  [isolated]"; fi
     printf '%s%-16s %-9s %-9s %s\n' "$mark" "$n" \
       "$([[ "$n" == "$def" ]] && echo default || echo "")" \
       "$(logged_in "$n" && echo "" || echo "no-login")" \
-      "$(account_email "$n")$(isolated "$n" && echo "  [isolated]" || true)"
+      "$(account_email "$n")$tag"
   done
   ((any)) || info "No accounts yet. Add one: cam add <name> [--import]"
 }
