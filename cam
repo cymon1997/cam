@@ -20,7 +20,7 @@
 #   `claude` runs as $CAM_ACCOUNT (set by `cam use`) or else the default.
 set -euo pipefail
 
-CAM_VERSION="0.3.0"
+CAM_VERSION="0.4.0"
 CAM_HOME="${CAM_HOME:-$HOME/.cam}"
 SHARED="${CAM_SHARED_DIR:-$HOME/.claude}"
 ACCOUNTS="$CAM_HOME/accounts"
@@ -153,7 +153,47 @@ a=json.load(open(sys.argv[1])).get("oauthAccount") or {}
 print(" / ".join(x for x in (a.get("emailAddress"), a.get("organizationName")) if x))' "$f" 2>/dev/null || true
 }
 
-logged_in() { [[ -s "$(acct_dir "$1")/.credentials.json" ]]; }
+# On macOS Claude Code keeps its login in the login Keychain, not in
+# .credentials.json. The item's account is $USER; its service is
+# "Claude Code-credentials", plus "-<first 8 hex of sha256(dir)>" when
+# CLAUDE_CONFIG_DIR is set. CAM_KEYCHAIN=1|0 forces it on or off.
+use_keychain() {
+  case "${CAM_KEYCHAIN:-auto}" in
+    1) return 0 ;; 0) return 1 ;;
+    *) [[ "$(uname -s)" == Darwin ]] && command -v security >/dev/null ;;
+  esac
+}
+kc_user()    { printf '%s' "${USER:-$(id -un)}"; }
+kc_service() { # kc_service [config dir]; no dir means the default ~/.claude
+  if [[ -z "${1:-}" ]]; then printf 'Claude Code-credentials'; return; fi
+  printf 'Claude Code-credentials-%s' "$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)"
+}
+kc_has()    { security find-generic-password -a "$(kc_user)" -s "$1" >/dev/null 2>&1; }
+kc_read()   { security find-generic-password -a "$(kc_user)" -s "$1" -w 2>/dev/null; }
+kc_delete() { security delete-generic-password -a "$(kc_user)" -s "$1" >/dev/null 2>&1 || true; }
+# kc_write <service>: the secret comes on stdin and goes to `security -i` as
+# hex, so it never shows up in a process listing.
+kc_write() {
+  local hex; hex="$(od -An -v -tx1 | tr -d ' \n')"
+  [[ -n "$hex" ]] || return 1
+  printf 'add-generic-password -U -a "%s" -s "%s" -X "%s"\n' "$(kc_user)" "$1" "$hex" | security -i >/dev/null
+}
+# The login Claude Code holds for the shared directory, from the file or the Keychain.
+shared_login() {
+  if [[ -s "$SHARED/.credentials.json" ]]; then cat "$SHARED/.credentials.json"; return; fi
+  use_keychain || return 1
+  local svc
+  for svc in "$(kc_service)" "$(kc_service "$SHARED")"; do
+    kc_has "$svc" && { kc_read "$svc"; return; }
+  done
+  return 1
+}
+
+logged_in() {
+  local dir; dir="$(acct_dir "$1")"
+  [[ -s "$dir/.credentials.json" ]] && return 0
+  use_keychain && kc_has "$(kc_service "$dir")"
+}
 
 launch() {
   local name="$1"; shift
@@ -185,9 +225,16 @@ cmd_add() {
   ((isolate)) && : > "$dir/$ISOLATE_MARK"
 
   if ((import)); then
-    [[ -s "$SHARED/.credentials.json" ]] || die "no login found in $SHARED/.credentials.json to import"
-    cp "$SHARED/.credentials.json" "$dir/.credentials.json"
-    chmod 600 "$dir/.credentials.json"
+    local cred where="$SHARED/.credentials.json"
+    use_keychain && where="$where or the Keychain"
+    if ! cred="$(shared_login)" || [[ -z "$cred" ]]; then
+      rm -rf -- "$dir"; die "no login found in $where to import"
+    fi
+    if use_keychain; then
+      printf '%s' "$cred" | kc_write "$(kc_service "$dir")" || { rm -rf -- "$dir"; die "could not write the login to the Keychain"; }
+    else
+      (umask 077; printf '%s' "$cred" > "$dir/.credentials.json")
+    fi
     cp "$HOME/.claude.json" "$dir/.claude.json"; chmod 600 "$dir/.claude.json"
     link_shared "$dir"
     info "Imported the current login into '$name' ($(account_email "$name"))."
@@ -289,6 +336,7 @@ cmd_remove() {
   # Drop the symlinks first so nothing shared can be reached by the delete.
   find "$dir" -mindepth 1 -maxdepth 1 -type l -delete
   rm -rf -- "$dir"
+  use_keychain && kc_delete "$(kc_service "$dir")"
   [[ "$(default_account)" == "$name" ]] && rm -f "$DEFAULT_FILE" && info "'$name' was the default; set a new one with: cam default <name>"
   info "Removed '$name'."
 }
@@ -297,6 +345,13 @@ cmd_rename() {
   [[ $# -eq 2 ]] || die "usage: cam rename <old> <new>"
   need "$1"; valid_name "$2"; exists "$2" && die "account '$2' already exists"
   mv "$(acct_dir "$1")" "$(acct_dir "$2")"
+  # The Keychain item is keyed by the directory path, so it moves too.
+  if use_keychain; then
+    local old_svc new_svc; old_svc="$(kc_service "$(acct_dir "$1")")"; new_svc="$(kc_service "$(acct_dir "$2")")"
+    if kc_has "$old_svc"; then
+      kc_read "$old_svc" | kc_write "$new_svc" && kc_delete "$old_svc"
+    fi
+  fi
   link_shared "$(acct_dir "$2")"
   [[ "$(default_account)" == "$1" ]] && printf '%s\n' "$2" > "$DEFAULT_FILE"
   info "Renamed '$1' → '$2'."
