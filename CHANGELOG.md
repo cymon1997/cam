@@ -4,6 +4,16 @@ All notable changes to cam are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-10-13
+
+### Added
+- macOS Keychain support. `cam add <name> --import` now imports a login that Claude Code keeps in
+  the Keychain, and `cam list`, `cam rename` and `cam remove` handle an account's Keychain item.
+  `CAM_KEYCHAIN=1|0` forces the behaviour on or off.
+
+### Fixed
+- A failed `cam add --import` no longer leaves an empty account directory behind.
+
 ## [0.3.0] — 2026-10-10
 
 ### Added

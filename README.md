@@ -83,8 +83,8 @@ were not there.
 
 ## Requirements
 
-- Linux. macOS should work but is not tested yet; see the
-  [macOS note](#macos-and---import).
+- Linux or macOS. On macOS, logins live in the Keychain; see the
+  [macOS note](#macos-and-the-keychain).
 - `bash` 4 or later, `python3`, and `curl` for the one-line installer.
 - [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) installed and on your `PATH`.
 
@@ -261,6 +261,7 @@ pool, and its prompt history is appended to the shared one.
 | `CAM_SHARED_DIR` | `~/.claude` | The directory whose state every account shares. |
 | `CAM_CLAUDE_BIN` | first `claude` on `PATH` that is not the shim | Path to the real Claude Code binary. |
 | `CAM_ACCOUNT` | *(unset)* | Account for this shell. Set by `cam use`. |
+| `CAM_KEYCHAIN` | `auto` (on for macOS) | `1` or `0` forces Keychain logins on or off. |
 
 ## Recipes
 
@@ -335,11 +336,21 @@ That copy is only used if you bypass cam, so either keep using cam or run `/logi
 **I want to see what cam would run.** `cam current` shows the account and `cam doctor` shows the
 real binary. `cam env <name>` prints the exact `CLAUDE_CONFIG_DIR`.
 
-### macOS and `--import`
+### macOS and the Keychain
 
-On macOS, Claude Code stores credentials in the Keychain instead of `~/.claude/.credentials.json`,
-so `cam add <name> --import` has nothing to copy. Use `cam add <name>` and log in again instead.
-Feedback from macOS users is welcome. Please open an issue.
+On macOS, Claude Code stores its login in the login Keychain, not in `.credentials.json`. The item
+is a generic password for account `$USER`. Its service is `Claude Code-credentials` for
+`~/.claude`, and `Claude Code-credentials-<hash>` for any other `CLAUDE_CONFIG_DIR`, where `<hash>`
+is the first 8 hex characters of the SHA-256 of the directory path.
+
+cam follows the same scheme:
+
+- `cam add <name> --import` copies the `~/.claude` Keychain item to the account's own item.
+- `cam list` reads the account's item to decide whether it is logged in.
+- `cam rename` moves the item to the new directory's service name, and `cam remove` deletes it.
+
+To see an account's item, run
+`security find-generic-password -a "$USER" -s "Claude Code-credentials-<hash>"`.
 
 ## Uninstalling
 

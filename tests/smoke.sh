@@ -11,6 +11,8 @@ export HOME="$SANDBOX/home"
 export CAM_HOME="$HOME/.cam"
 export SHELL=/bin/bash
 unset CAM_ACCOUNT CAM_ACCOUNT_ACTIVE CAM_SHELL_INIT CLAUDE_CONFIG_DIR
+# File-based logins by default, so a macOS run never touches the real Keychain.
+export CAM_KEYCHAIN=0
 mkdir -p "$HOME/.claude" "$SANDBOX/fakebin"
 
 # A fake claude: reports which config dir it was given, and "logs in" by
@@ -34,6 +36,27 @@ echo '{}' > "$CLAUDE_CONFIG_DIR/projects/demo/session-$$.jsonl"
 echo "config=$CLAUDE_CONFIG_DIR account=${CAM_ACCOUNT_ACTIVE:-} args=$*"
 EOF
 chmod +x "$SANDBOX/fakebin/claude"
+
+# A fake macOS `security`: one file per Keychain service under $SANDBOX/keychain.
+mkdir -p "$SANDBOX/keychain"
+cat > "$SANDBOX/fakebin/security" <<EOF
+#!/usr/bin/env bash
+kc="$SANDBOX/keychain"
+EOF
+cat >> "$SANDBOX/fakebin/security" <<'EOF'
+svc="" show=0 hex=""
+parse() { while (($#)); do case "$1" in -s) svc="$2"; shift ;; -X) hex="$2"; shift ;; -a) shift ;; -w) show=1 ;; esac; shift; done; }
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  -i) read -r line; eval "set -- $line"; cmd="$1"; shift; parse "$@"
+      [[ "$cmd" == add-generic-password ]] || exit 1
+      printf '%b' "$(sed 's/../\\x&/g' <<<"$hex")" > "$kc/$svc" ;;
+  find-generic-password) parse "$@"; [[ -f "$kc/$svc" ]] || exit 44; if ((show)); then cat "$kc/$svc"; echo; fi ;;
+  delete-generic-password) parse "$@"; [[ -f "$kc/$svc" ]] || exit 44; rm -f "$kc/$svc" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$SANDBOX/fakebin/security"
 export PATH="$SANDBOX/fakebin:$PATH"
 
 # An existing Claude Code login to import.
@@ -141,6 +164,26 @@ if command -v zsh >/dev/null; then
   check "zsh completion registers" contains \
     "$(zsh -fc 'eval "$("$1" init zsh)"; print -r -- "$_comps[cam]"' _ "$CAM_HOME/bin/cam")" "_cam"
 fi
+
+# macOS: the login lives in the Keychain, keyed by the config directory.
+kc_svc() { printf 'Claude Code-credentials-%s' "$(printf '%s' "$CAM_HOME/accounts/$1" | shasum -a 256 | cut -c1-8)"; }
+export CAM_KEYCHAIN=1
+mv "$HOME/.claude/.credentials.json" "$SANDBOX/credentials.bak"
+cam add mac --import --no-login 2>/dev/null && kc_ok=1 || kc_ok=0
+check "keychain: import fails cleanly with no login" [ "$kc_ok" = 0 ]
+check "keychain: failed import leaves no account" [ ! -d "$CAM_HOME/accounts/mac" ]
+echo '{"token":"from-keychain"}' > "$SANDBOX/keychain/Claude Code-credentials"
+cam add mac --import 2>/dev/null
+check "keychain: import copies the login item" grep -q from-keychain "$SANDBOX/keychain/$(kc_svc mac)"
+check "keychain: import writes no credentials file" [ ! -e "$CAM_HOME/accounts/mac/.credentials.json" ]
+check "keychain: list shows the account logged in" bash -c "! cam list | grep '^. *mac ' | grep -q no-login"
+cam rename mac mac2 2>/dev/null
+check "keychain: rename moves the login item" grep -q from-keychain "$SANDBOX/keychain/$(kc_svc mac2)"
+check "keychain: rename drops the old item" [ ! -e "$SANDBOX/keychain/$(kc_svc mac)" ]
+cam remove mac2 -y 2>/dev/null
+check "keychain: remove deletes the login item" [ ! -e "$SANDBOX/keychain/$(kc_svc mac2)" ]
+mv "$SANDBOX/credentials.bak" "$HOME/.claude/.credentials.json"
+export CAM_KEYCHAIN=0
 
 check "unknown account fails" bash -c "! cam run nope 2>/dev/null"
 check "isolate on an unknown account fails" bash -c "! cam isolate nope 2>/dev/null"
